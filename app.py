@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import atexit
+import csv
+import io
 import json
+import math
 import os
 import re
 import socket
 import sqlite3
-import sys
 import threading
 import time
 import webbrowser
@@ -21,392 +22,224 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from waitress import serve
 
-
 APP_NAME = "FlashscoreAnalyzer"
-
-
-def app_data_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        path = Path(base) / APP_NAME
-    else:
-        path = Path.home() / f".{APP_NAME.lower()}"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-DATA_DIR = app_data_dir()
-DB_PATH = DATA_DIR / "odds.db"
+DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "analyzer.db"
 
 app = Flask(__name__)
-
 
 HTML = r"""
 <!doctype html>
 <html lang="tr">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flashscore Analyzer</title>
 <style>
-:root{
-  --bg:#f4f7fb;--panel:#fff;--text:#152033;--muted:#6f7c8e;
-  --line:#e3e9f1;--accent:#ec174c;--ok:#087f5b;--bad:#c92a2a
-}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
-font-family:Inter,Segoe UI,Arial,sans-serif}
-.wrap{width:min(1100px,calc(100% - 28px));margin:34px auto 80px}
-.hero{padding:10px 4px 6px}
-h1{font-size:clamp(34px,6vw,60px);line-height:1;margin:8px 0 14px;letter-spacing:-.04em}
-h2{font-size:21px;margin:0}
-.lead{color:var(--muted);font-size:17px;line-height:1.6;max-width:820px}
-.eyebrow{color:var(--accent);font-weight:900;font-size:12px;letter-spacing:.14em;margin:0}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;
-padding:22px;margin-top:18px;box-shadow:0 10px 30px rgba(31,45,61,.05)}
-label{display:block;font-weight:800;margin-bottom:10px}
-.input-row{display:grid;grid-template-columns:1fr auto;gap:10px}
-input{width:100%;border:1px solid #ccd6e3;border-radius:12px;padding:15px 16px;
-font-size:16px;outline:none}
-input:focus{border-color:var(--accent);box-shadow:0 0 0 4px rgba(236,23,76,.1)}
-button{border:0;border-radius:12px;padding:0 25px;background:var(--accent);color:white;
-font-weight:900;font-size:15px;cursor:pointer}
-button:disabled{opacity:.65;cursor:wait}
-.status{margin-top:18px;padding:15px 18px;border-radius:12px;font-weight:800}
-.status.info{background:#e7f5ff;color:#1864ab}
-.status.success{background:#e6fcf5;color:var(--ok)}
-.status.error{background:#fff5f5;color:var(--bad)}
-.hidden{display:none}
-.section-title{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:15px}
-.badge{background:#f1f3f5;color:#495057;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900}
-.chips,.values{display:flex;flex-wrap:wrap;gap:8px}
-.chips span,.values span{background:#fff0f4;color:#bd123d;border-radius:999px;padding:7px 10px;
-font-size:12px;font-weight:900}
-.cards{display:grid;gap:10px}
-.card{display:grid;grid-template-columns:38px 1fr;gap:12px;border:1px solid var(--line);
-border-radius:13px;padding:14px}
-.num{width:32px;height:32px;display:grid;place-items:center;border-radius:9px;
-background:#f1f3f5;color:#6c757d;font-weight:900}
-.card p{margin:0 0 9px;line-height:1.45}
-.hint,.warning,.empty{color:var(--muted);font-size:14px;line-height:1.55}
-details{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:10px}
-summary{cursor:pointer;font-weight:800}
-.history-body{color:var(--muted);font-size:13px}
-.note{border-left:5px solid #fab005}
-@media(max-width:700px){
- .wrap{width:min(100% - 18px,1100px);margin-top:15px}
- .panel{padding:16px;border-radius:14px}
- .input-row{grid-template-columns:1fr}
- button{min-height:50px}
-}
+:root{--bg:#f4f7fb;--panel:#fff;--text:#152033;--muted:#6f7c8e;--line:#e3e9f1;--a:#ec174c;--ok:#087f5b;--bad:#c92a2a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Segoe UI,Arial,sans-serif}
+.wrap{width:min(1120px,calc(100% - 28px));margin:32px auto 70px}.hero{padding:8px 4px}
+h1{font-size:clamp(36px,6vw,62px);line-height:1;margin:8px 0 14px;letter-spacing:-.04em}h2{margin:0 0 14px}
+.lead,.hint{color:var(--muted);line-height:1.6}.ey{color:var(--a);font-size:12px;font-weight:900;letter-spacing:.14em}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;margin-top:18px;box-shadow:0 10px 30px rgba(31,45,61,.05)}
+.row{display:grid;grid-template-columns:1fr auto;gap:10px}input[type=url],input[type=file]{width:100%;border:1px solid #ccd6e3;border-radius:12px;padding:14px;font-size:16px}
+button{border:0;border-radius:12px;padding:0 24px;min-height:50px;background:var(--a);color:white;font-weight:900;cursor:pointer}
+button.secondary{background:#1f2937}.status{padding:14px 17px;border-radius:12px;margin-top:18px;font-weight:800}.info{background:#e7f5ff;color:#1864ab}.ok{background:#e6fcf5;color:var(--ok)}.bad{background:#fff5f5;color:var(--bad)}.hidden{display:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card{border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h3{margin:0 0 12px;font-size:16px}.metric{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed var(--line)}
+.metric:last-child{border:0}.pct{font-weight:900;color:var(--a)}.badge{display:inline-block;border-radius:999px;background:#f1f3f5;padding:7px 10px;font-size:12px;font-weight:800}
+pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;padding:12px;border-radius:12px;max-height:280px;overflow:auto}
+@media(max-width:700px){.row{grid-template-columns:1fr}.panel{padding:16px}}
 </style>
 </head>
 <body>
 <main class="wrap">
-  <section class="hero">
-    <p class="eyebrow">WINDOWS • YEREL VERİTABANI</p>
-    <h1>Flashscore Analyzer</h1>
-    <p class="lead">Flashscore maç bağlantısını yapıştır. Program sayfayı Chrome ile açar, görünen oran satırlarını tarar ve aynı bağlantının önceki taramalarıyla karşılaştırmak için kaydeder.</p>
-  </section>
+<section class="hero"><div class="ey">WINDOWS • GEÇMİŞ VERİ ANALİZİ</div><h1>Flashscore Analyzer</h1>
+<p class="lead">Önce geçmiş maç CSV dosyanı içe aktar. Sonra Flashscore maç bağlantısını tara; program benzer oranlı geçmiş maçları bulup olasılıkları hesaplar.</p></section>
 
-  <section class="panel">
-    <label for="url">Flashscore maç bağlantısı</label>
-    <div class="input-row">
-      <input id="url" type="url" placeholder="https://www.flashscore.co.uk/match/..." autocomplete="off">
-      <button id="scan">Maçı Tara</button>
-    </div>
-    <p class="hint">Google Chrome bilgisayarda kurulu olmalıdır. Yoğun/toplu tarama yapılmamalıdır.</p>
-  </section>
+<section class="panel">
+<h2>1. Geçmiş veriyi içe aktar</h2>
+<div class="row"><input id="csv" type="file" accept=".csv"><button class="secondary" id="importBtn">CSV'yi İçe Aktar</button></div>
+<p class="hint">Gerekli sütunlar: date, home_odds, draw_odds, away_odds, ht_home_goals, ht_away_goals, ft_home_goals, ft_away_goals. İlk yarı oranları varsa ayrıca ht_home_odds, ht_draw_odds, ht_away_odds kullanılır.</p>
+<div id="importStatus" class="status hidden"></div>
+</section>
 
-  <section id="status" class="status hidden"></section>
+<section class="panel">
+<h2>2. Güncel maçı tara</h2>
+<div class="row"><input id="url" type="url" placeholder="https://www.flashscore.co.uk/match/..."><button id="scanBtn">Maçı Tara ve Analiz Et</button></div>
+<p class="hint">Google Chrome kurulu olmalıdır. Tarama sonunda bulunan 1X2 oranları, geçmiş verideki en yakın maçlarla eşleştirilir.</p>
+<div id="scanStatus" class="status hidden"></div>
+</section>
 
-  <section id="summary" class="panel hidden">
-    <div class="section-title">
-      <div><p class="eyebrow">TARAMA SONUCU</p><h2 id="match">Maç</h2></div>
-      <span id="marketCount" class="badge"></span>
-    </div>
-    <div id="markets" class="chips"></div>
-    <p id="warning" class="warning"></p>
-  </section>
+<section id="analysisPanel" class="panel hidden">
+<div style="display:flex;justify-content:space-between;gap:12px;align-items:center"><h2 id="matchName">Analiz</h2><span id="sample" class="badge"></span></div>
+<div id="analysis" class="grid"></div>
+</section>
 
-  <section id="rowsPanel" class="panel hidden">
-    <div class="section-title"><h2>Bulunan oran satırları</h2><span id="rowCount" class="badge"></span></div>
-    <div id="rows" class="cards"></div>
-  </section>
-
-  <section id="historyPanel" class="panel hidden">
-    <div class="section-title"><h2>Önceki taramalar</h2><span class="badge">SQLite</span></div>
-    <p class="hint">Aynı maçı farklı saatlerde yeniden taradıkça değişim geçmişi oluşur.</p>
-    <div id="history"></div>
-  </section>
-
-  <section class="panel note">
-    <h2>Bilgi</h2>
-    <p class="hint">Bu uygulama sayfada o anda görülebilen veriyi kaydeder. Flashscore'da mevcut olmayan altı yıllık geçmiş açılış-kapanış oranlarını geriye dönük olarak üretemez.</p>
-  </section>
+<section id="rawPanel" class="panel hidden"><h2>Sayfadan bulunan oran satırları</h2><pre id="raw"></pre></section>
 </main>
 <script>
 const $=s=>document.querySelector(s);
-const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-function status(t,k="info"){const e=$("#status");e.className=`status ${k}`;e.textContent=t}
-function renderRows(rows){
- $("#rows").innerHTML=rows.map((r,i)=>`<article class="card"><div class="num">${i+1}</div><div>
- <p>${esc(r.text)}</p><div class="values">${(r.values||[]).map(v=>`<span>${Number(v).toFixed(2)}</span>`).join("")}</div>
- </div></article>`).join("");
- $("#rowCount").textContent=`${rows.length} satır`;
-}
-function renderHistory(items){
- if(!items||items.length<2){$("#history").innerHTML='<p class="empty">Karşılaştırma için aynı maçı daha sonra tekrar tara.</p>';return}
- $("#history").innerHTML=items.map((x,i)=>`<details ${i===0?"open":""}>
- <summary>${new Date(x.scan_time).toLocaleString("tr-TR")} — ${x.rows.length} örnek satır</summary>
- <div class="history-body">${x.rows.slice(0,8).map(r=>`<p>${esc(r.text)}</p>`).join("")}</div></details>`).join("");
-}
-$("#scan").onclick=async()=>{
- const url=$("#url").value.trim(); if(!url){status("Önce bir maç bağlantısı yapıştır.","error");return}
- const b=$("#scan"); b.disabled=true;b.textContent="Taranıyor…";status("Chrome arka planda açılıyor ve oranlar okunuyor…");
- try{
-  const res=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})});
-  const d=await res.json(); if(!res.ok||!d.ok)throw new Error(d.error||"Bilinmeyen hata");
-  const r=d.result; status("Tarama tamamlandı ve kaydedildi.","success");
-  $("#match").textContent=r.match_name||"Maç";
-  $("#markets").innerHTML=(r.markets_found||[]).map(x=>`<span>${esc(x)}</span>`).join("");
-  $("#marketCount").textContent=`${(r.markets_found||[]).length} market`;
-  $("#warning").textContent=r.warning||"";
-  renderRows(r.rows||[]);renderHistory(d.history||[]);
-  $("#summary").classList.remove("hidden");$("#rowsPanel").classList.remove("hidden");$("#historyPanel").classList.remove("hidden");
- }catch(e){status(e.message,"error")}
- finally{b.disabled=false;b.textContent="Maçı Tara"}
+function stat(el,text,type){el.className=`status ${type}`;el.textContent=text}
+function card(title,items){return `<div class="card"><h3>${title}</h3>${items.map(x=>`<div class="metric"><span>${x[0]}</span><span class="pct">%${x[1]}</span></div>`).join("")}</div>`}
+$("#importBtn").onclick=async()=>{
+ const f=$("#csv").files[0], s=$("#importStatus"); if(!f){stat(s,"CSV dosyası seç.","bad");return}
+ const fd=new FormData();fd.append("file",f);stat(s,"Veri içe aktarılıyor…","info");
+ try{const r=await fetch("/api/import",{method:"POST",body:fd});const d=await r.json();if(!r.ok)throw new Error(d.error);stat(s,`${d.inserted} maç içe aktarıldı. Toplam: ${d.total}`,"ok")}
+ catch(e){stat(s,e.message,"bad")}
 };
-$("#url").addEventListener("keydown",e=>{if(e.key==="Enter")$("#scan").click()});
-</script>
-</body>
-</html>
+$("#scanBtn").onclick=async()=>{
+ const url=$("#url").value.trim(),s=$("#scanStatus");if(!url){stat(s,"Maç linkini yapıştır.","bad");return}
+ stat(s,"Sayfa taranıyor ve geçmiş veriyle eşleştiriliyor…","info");
+ try{
+  const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})});
+  const d=await r.json();if(!r.ok)throw new Error(d.error);
+  stat(s,"Analiz tamamlandı.","ok");$("#matchName").textContent=d.match_name;$("#sample").textContent=`${d.analysis.sample_size} benzer maç`;
+  const a=d.analysis;
+  $("#analysis").innerHTML=[
+   card("Maç Sonucu",[["1",a.ft_result.home],["X",a.ft_result.draw],["2",a.ft_result.away]]),
+   card("İlk Yarı Sonucu",[["İY 1",a.ht_result.home],["İY X",a.ht_result.draw],["İY 2",a.ht_result.away]]),
+   card("HT / FT",Object.entries(a.htft).map(([k,v])=>[k,v])),
+   card("Toplam Gol",[["0.5 Üst",a.goals.over_0_5],["1.5 Üst",a.goals.over_1_5],["2.5 Üst",a.goals.over_2_5],["3.5 Üst",a.goals.over_3_5]]),
+   card("İlk Yarı Gol",[["0.5 Üst",a.ht_goals.over_0_5],["1.5 Üst",a.ht_goals.over_1_5],["2.5 Üst",a.ht_goals.over_2_5]]),
+   card("İkinci Yarı Gol",[["0.5 Üst",a.sh_goals.over_0_5],["1.5 Üst",a.sh_goals.over_1_5],["2.5 Üst",a.sh_goals.over_2_5]]),
+   card("KG Var / Yok",[["Genel KG Var",a.btts.full_yes],["Genel KG Yok",a.btts.full_no],["İY KG Var",a.btts.ht_yes],["İY KG Yok",a.btts.ht_no],["2Y KG Var",a.btts.sh_yes],["2Y KG Yok",a.btts.sh_no]])
+  ].join("");
+  $("#analysisPanel").classList.remove("hidden");$("#raw").textContent=d.raw_rows.map(x=>x.text).join("\n\n");$("#rawPanel").classList.remove("hidden");
+ }catch(e){stat(s,e.message,"bad")}
+};
+</script></body></html>
 """
 
-
-def init_db() -> None:
+def init_db():
     with sqlite3.connect(DB_PATH) as con:
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS scans(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT NOT NULL,
-            match_name TEXT,
-            scan_time TEXT NOT NULL,
-            odds_json TEXT NOT NULL
-        )
-        """)
+        con.execute("""CREATE TABLE IF NOT EXISTS historical_matches(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,date TEXT,home_odds REAL,draw_odds REAL,away_odds REAL,
+          ht_home_odds REAL,ht_draw_odds REAL,ht_away_odds REAL,
+          ht_home_goals INTEGER,ht_away_goals INTEGER,ft_home_goals INTEGER,ft_away_goals INTEGER
+        )""")
         con.commit()
 
+def clean(s): return re.sub(r"\s+"," ",str(s or "")).strip()
 
-def clean(value: str) -> str:
-    return re.sub(r"\s+", " ", value or "").strip()
+def fnum(v):
+    try: return float(str(v).replace(",","."))
+    except: return None
 
+def inum(v):
+    try: return int(float(v))
+    except: return None
 
-def valid_flashscore_url(url: str) -> bool:
+def valid_url(url):
     try:
-        p = urlparse(url)
-        host = (p.hostname or "").lower()
-        return p.scheme in {"http", "https"} and (
-            host == "flashscore.co.uk" or host.endswith(".flashscore.co.uk")
-        ) and "/match/" in p.path
-    except Exception:
-        return False
-
-
-def decimal_value(token: str):
-    token = clean(token).replace(",", ".")
-    if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3})?", token):
-        return None
-    value = float(token)
-    return value if 1.01 <= value <= 1000 else None
-
+        p=urlparse(url);h=(p.hostname or "").lower()
+        return p.scheme in {"http","https"} and (h=="flashscore.co.uk" or h.endswith(".flashscore.co.uk")) and "/match/" in p.path
+    except:return False
 
 def make_driver():
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--window-size=1440,1200")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-notifications")
-    options.add_argument("--lang=en-GB")
-    options.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
-    # Selenium Manager, uyumlu ChromeDriver'ı otomatik bulur/indirir.
-    return webdriver.Chrome(options=options)
+    o=Options()
+    for arg in ["--headless=new","--window-size=1440,1200","--disable-gpu","--no-sandbox","--disable-dev-shm-usage","--lang=en-GB"]:
+        o.add_argument(arg)
+    return webdriver.Chrome(options=o)
 
-
-def scrape(url: str) -> dict:
-    driver = None
+def scrape(url):
+    d=None
     try:
-        driver = make_driver()
-        driver.set_page_load_timeout(45)
-        driver.get(url)
-        time.sleep(6)
-
-        # Çerez düğmeleri için birkaç genel deneme.
-        for text in ("Accept", "I Accept", "Agree", "Allow all", "OK"):
-            try:
-                buttons = driver.find_elements(
-                    By.XPATH,
-                    f"//button[contains(translate(normalize-space(.),"
-                    f"'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
-                    f"'{text.lower()}')]"
-                )
-                if buttons:
-                    buttons[0].click()
-                    time.sleep(1)
-                    break
-            except Exception:
-                pass
-
-        title = clean(driver.title)
-        body_text = clean(driver.find_element(By.TAG_NAME, "body").text)
-        match_name = title.split("|")[0].strip() if title else "Bilinmeyen maç"
-
-        script = """
-        const visible = el => {
-          const s=getComputedStyle(el), r=el.getBoundingClientRect();
-          return s.display!=='none' && s.visibility!=='hidden' && r.width>0 && r.height>0;
-        };
-        const sel='[class*="odds"],[class*="bookmaker"],[class*="ui-table"],[class*="row"]';
-        const out=[];
-        for(const el of [...document.querySelectorAll(sel)].filter(visible)){
-          const text=(el.innerText||'').replace(/\\s+/g,' ').trim();
-          if(!text || text.length>500) continue;
-          const nums=text.match(/\\b\\d{1,3}[.,]\\d{1,3}\\b/g)||[];
-          if(nums.length) out.push({text});
-          if(out.length>=900) break;
-        }
-        return out;
-        """
-        raw = driver.execute_script(script) or []
-
-        seen = set()
-        rows = []
-        banned = ("claim", "free bet", "advertisement", "responsibly", "cookie")
-        for item in raw:
-            text = clean(item.get("text", ""))
-            if not text or text in seen or len(text) < 8:
-                continue
-            seen.add(text)
-            if any(word in text.lower() for word in banned):
-                continue
-            values = []
-            for token in re.findall(r"\b\d{1,3}[.,]\d{1,3}\b", text):
-                value = decimal_value(token)
-                if value is not None:
-                    values.append(value)
-            if values:
-                rows.append({"text": text, "values": values})
-            if len(rows) >= 140:
-                break
-
-        known = [
-            "1X2", "OVER/UNDER", "BOTH TEAMS TO SCORE", "DOUBLE CHANCE",
-            "ASIAN HANDICAP", "EUROPEAN HANDICAP", "DRAW NO BET",
-            "CORRECT SCORE", "HALF TIME/FULL TIME", "1ST HALF", "2ND HALF"
-        ]
-        upper = body_text.upper()
-        markets = [m for m in known if m in upper]
-
-        return {
-            "match_name": match_name,
-            "markets_found": markets,
-            "rows": rows,
-            "warning": (
-                "Flashscore sayfa yapısını değiştirir, CAPTCHA gösterir veya otomatik "
-                "erişimi sınırlandırırsa tarama başarısız olabilir."
-            ),
-        }
+        d=make_driver();d.set_page_load_timeout(45);d.get(url);time.sleep(6)
+        title=clean(d.title);body=clean(d.find_element(By.TAG_NAME,"body").text)
+        script="""const vis=e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return s.display!='none'&&s.visibility!='hidden'&&r.width>0&&r.height>0};
+        const out=[];for(const e of [...document.querySelectorAll('[class*="odds"],[class*="bookmaker"],[class*="ui-table"],[class*="row"]')].filter(vis)){
+        const t=(e.innerText||'').replace(/\\s+/g,' ').trim();if(!t||t.length>500)continue;const n=t.match(/\\b\\d{1,3}[.,]\\d{1,3}\\b/g)||[];if(n.length)out.push({text:t});if(out.length>700)break}return out"""
+        raw=d.execute_script(script) or []
+        seen=set();rows=[]
+        for x in raw:
+            t=clean(x.get("text",""))
+            if not t or t in seen or any(w in t.lower() for w in ["free bet","claim","advertisement","cookie"]):continue
+            seen.add(t);vals=[]
+            for tok in re.findall(r"\b\d{1,3}[.,]\d{1,3}\b",t):
+                v=fnum(tok)
+                if v and 1.01<=v<=1000:vals.append(v)
+            if vals:rows.append({"text":t,"values":vals})
+            if len(rows)>=140:break
+        # best-effort 1X2: choose a row containing exactly three plausible odds, preferring bookmaker rows
+        candidates=[r for r in rows if len(r["values"])>=3]
+        if not candidates: raise ValueError("1X2 oran satırı bulunamadı.")
+        candidates.sort(key=lambda r:(0 if any(b in r["text"].lower() for b in ["bet365","betmgm","betfred","unibet"]) else 1,len(r["text"])))
+        odds=candidates[0]["values"][:3]
+        return title.split("|")[0].strip() or "Maç",odds,rows
     finally:
-        if driver is not None:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+        if d:
+            try:d.quit()
+            except:pass
 
+def outcome(h,a): return "home" if h>a else "away" if h<a else "draw"
+def pct(n,d): return round(100*n/d,1) if d else 0.0
 
-def save_scan(url: str, result: dict) -> int:
-    stamp = datetime.now(timezone.utc).isoformat()
+def analyze(odds):
     with sqlite3.connect(DB_PATH) as con:
-        cur = con.execute(
-            "INSERT INTO scans(url,match_name,scan_time,odds_json) VALUES(?,?,?,?)",
-            (url, result.get("match_name"), stamp, json.dumps(result, ensure_ascii=False)),
-        )
-        con.commit()
-        return int(cur.lastrowid)
-
-
-def history(url: str, limit: int = 10):
-    with sqlite3.connect(DB_PATH) as con:
-        found = con.execute(
-            "SELECT id,scan_time,odds_json FROM scans WHERE url=? ORDER BY id DESC LIMIT ?",
-            (url, limit),
-        ).fetchall()
-    out = []
-    for scan_id, scan_time, odds_json in found:
-        try:
-            data = json.loads(odds_json)
-        except Exception:
-            data = {}
-        out.append({"id": scan_id, "scan_time": scan_time, "rows": data.get("rows", [])[:20]})
-    return out
-
+        rows=con.execute("""SELECT home_odds,draw_odds,away_odds,ht_home_goals,ht_away_goals,ft_home_goals,ft_away_goals
+                            FROM historical_matches WHERE home_odds IS NOT NULL AND draw_odds IS NOT NULL AND away_odds IS NOT NULL""").fetchall()
+    if len(rows)<30: raise ValueError("Analiz için en az 30 geçmiş maç gerekir. Önce CSV içe aktar.")
+    scored=[]
+    for r in rows:
+        dist=math.sqrt(sum(((r[i]-odds[i])/max(odds[i],1.01))**2 for i in range(3)))
+        scored.append((dist,r))
+    scored.sort(key=lambda x:x[0]);sample=[r for _,r in scored[:min(500,max(50,len(scored)//20))]]
+    n=len(sample)
+    ft={"home":0,"draw":0,"away":0};ht={"home":0,"draw":0,"away":0};htft={k:0 for k in ["1/1","1/X","1/2","X/1","X/X","X/2","2/1","2/X","2/2"]}
+    g={k:0 for k in ["over_0_5","over_1_5","over_2_5","over_3_5"]};hg={k:0 for k in ["over_0_5","over_1_5","over_2_5"]};sg={k:0 for k in ["over_0_5","over_1_5","over_2_5"]}
+    b={"full_yes":0,"ht_yes":0,"sh_yes":0}
+    symbol={"home":"1","draw":"X","away":"2"}
+    for _,_,_,hh,ha,fh,fa in sample:
+        fo=outcome(fh,fa);ho=outcome(hh,ha);ft[fo]+=1;ht[ho]+=1;htft[f"{symbol[ho]}/{symbol[fo]}"]+=1
+        total=fh+fa;htotal=hh+ha;stotal=(fh-hh)+(fa-ha)
+        for line,key in [(0.5,"over_0_5"),(1.5,"over_1_5"),(2.5,"over_2_5"),(3.5,"over_3_5")]:
+            if total>line:g[key]+=1
+        for line,key in [(0.5,"over_0_5"),(1.5,"over_1_5"),(2.5,"over_2_5")]:
+            if htotal>line:hg[key]+=1
+            if stotal>line:sg[key]+=1
+        if fh>0 and fa>0:b["full_yes"]+=1
+        if hh>0 and ha>0:b["ht_yes"]+=1
+        if fh-hh>0 and fa-ha>0:b["sh_yes"]+=1
+    conv=lambda d:{k:pct(v,n) for k,v in d.items()}
+    return {"sample_size":n,"ft_result":conv(ft),"ht_result":conv(ht),"htft":conv(htft),"goals":conv(g),"ht_goals":conv(hg),"sh_goals":conv(sg),
+            "btts":{"full_yes":pct(b["full_yes"],n),"full_no":pct(n-b["full_yes"],n),"ht_yes":pct(b["ht_yes"],n),"ht_no":pct(n-b["ht_yes"],n),"sh_yes":pct(b["sh_yes"],n),"sh_no":pct(n-b["sh_yes"],n)}}
 
 @app.get("/")
-def home():
-    return render_template_string(HTML)
+def home(): return render_template_string(HTML)
 
+@app.post("/api/import")
+def import_csv():
+    f=request.files.get("file")
+    if not f:return jsonify(error="CSV dosyası bulunamadı."),400
+    text=f.read().decode("utf-8-sig",errors="replace")
+    reader=csv.DictReader(io.StringIO(text))
+    required={"date","home_odds","draw_odds","away_odds","ht_home_goals","ht_away_goals","ft_home_goals","ft_away_goals"}
+    if not required.issubset(set(reader.fieldnames or [])):
+        return jsonify(error="CSV sütunları eksik: "+", ".join(sorted(required-set(reader.fieldnames or [])))),400
+    vals=[]
+    for r in reader:
+        row=(r.get("date"),fnum(r.get("home_odds")),fnum(r.get("draw_odds")),fnum(r.get("away_odds")),
+             fnum(r.get("ht_home_odds")),fnum(r.get("ht_draw_odds")),fnum(r.get("ht_away_odds")),
+             inum(r.get("ht_home_goals")),inum(r.get("ht_away_goals")),inum(r.get("ft_home_goals")),inum(r.get("ft_away_goals")))
+        if None not in (row[1],row[2],row[3],row[7],row[8],row[9],row[10]):vals.append(row)
+    with sqlite3.connect(DB_PATH) as con:
+        con.executemany("""INSERT INTO historical_matches(date,home_odds,draw_odds,away_odds,ht_home_odds,ht_draw_odds,ht_away_odds,ht_home_goals,ht_away_goals,ft_home_goals,ft_away_goals)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",vals);con.commit()
+        total=con.execute("SELECT COUNT(*) FROM historical_matches").fetchone()[0]
+    return jsonify(inserted=len(vals),total=total)
 
 @app.post("/api/scan")
-def api_scan():
-    payload = request.get_json(silent=True) or {}
-    url = clean(payload.get("url", ""))
-    if not valid_flashscore_url(url):
-        return jsonify(ok=False, error="Geçerli bir flashscore.co.uk maç bağlantısı yapıştır."), 400
+def scan_api():
+    url=clean((request.get_json(silent=True) or {}).get("url"))
+    if not valid_url(url):return jsonify(error="Geçerli Flashscore maç bağlantısı yapıştır."),400
     try:
-        result = scrape(url)
-        scan_id = save_scan(url, result)
-        return jsonify(ok=True, scan_id=scan_id, result=result, history=history(url, 8))
-    except TimeoutException:
-        return jsonify(ok=False, error="Sayfa zaman aşımına uğradı."), 504
-    except WebDriverException as exc:
-        return jsonify(
-            ok=False,
-            error=(
-                "Chrome başlatılamadı. Google Chrome'un kurulu ve güncel olduğundan emin ol. "
-                f"Teknik ayrıntı: {clean(str(exc))[:300]}"
-            ),
-        ), 500
-    except Exception as exc:
-        return jsonify(ok=False, error=f"Tarama başarısız: {type(exc).__name__}: {clean(str(exc))[:300]}"), 500
+        name,odds,rows=scrape(url);a=analyze(odds)
+        return jsonify(match_name=name,current_odds=odds,analysis=a,raw_rows=rows)
+    except Exception as e:return jsonify(error=f"{type(e).__name__}: {clean(e)}"),500
 
-
-def free_port(preferred: int = 5000) -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind(("127.0.0.1", preferred))
-            return preferred
-        except OSError:
-            sock.bind(("127.0.0.1", 0))
-            return int(sock.getsockname()[1])
-
-
-def open_later(url: str):
-    time.sleep(1.2)
-    webbrowser.open(url)
-
-
+def port():
+    s=socket.socket();s.bind(("127.0.0.1",0));p=s.getsockname()[1];s.close();return p
 def main():
-    init_db()
-    port = free_port()
-    url = f"http://127.0.0.1:{port}"
-    threading.Thread(target=open_later, args=(url,), daemon=True).start()
-    serve(app, host="127.0.0.1", port=port, threads=6)
-
-
-if __name__ == "__main__":
-    main()
+    init_db();p=port();url=f"http://127.0.0.1:{p}";threading.Thread(target=lambda:(time.sleep(1),webbrowser.open(url)),daemon=True).start();serve(app,host="127.0.0.1",port=p,threads=6)
+if __name__=="__main__":main()
