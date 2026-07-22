@@ -1,0 +1,30 @@
+FLASHSCORE ANALYZER — WINDOWS EXE
+
+PROGRAMI ÇALIŞTIRMA
+1. FlashscoreAnalyzer.exe dosyasına çift tıkla.
+2. Windows güvenlik uyarısı gösterirse "Daha fazla bilgi" > "Yine de çalıştır" seçeneğini kullan.
+3. Tarayıcı otomatik açılır.
+4. Flashscore maç bağlantısını yapıştır ve "Maçı Tara" düğmesine bas.
+5. Google Chrome bilgisayarda kurulu olmalıdır.
+
+EXE'Yİ ÜCRETSİZ OLUŞTURMA — GITHUB ACTIONS
+1. github.com üzerinde ücretsiz hesap aç.
+2. Yeni, boş bir depo oluştur.
+3. Bu klasördeki bütün dosyaları depoya yükle.
+   ".github/workflows/build-windows.yml" dosyasının da yüklendiğinden emin ol.
+4. Depoda "Actions" sekmesini aç.
+5. "Windows EXE Olustur" iş akışını seç.
+6. "Run workflow" düğmesine bas.
+7. İşlem tamamlandığında sayfanın altındaki "Artifacts" bölümünden
+   "FlashscoreAnalyzer-Windows" dosyasını indir.
+8. ZIP'i çıkar ve FlashscoreAnalyzer.exe dosyasını çalıştır.
+
+BİLGİLER
+- Çalıştırmak için Python gerekmez.
+- Google Chrome gerekir.
+- Veritabanı şu klasöre kaydedilir:
+  %LOCALAPPDATA%\FlashscoreAnalyzer\odds.db
+- Aynı maç linkini farklı zamanlarda taradıkça geçmiş taramalar birikir.
+- Uygulama toplu veya yüksek hızlı tarama için tasarlanmamıştır.
+- Flashscore sayfa yapısı, CAPTCHA veya erişim sınırlamaları taramayı bozabilir.
+- Sayfada bulunmayan altı yıllık geçmiş oranlar otomatik olarak üretilemez.

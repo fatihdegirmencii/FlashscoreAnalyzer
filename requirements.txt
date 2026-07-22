@@ -1,0 +1,4 @@
+Flask>=3.0,<4
+selenium>=4.25,<5
+waitress>=3.0,<4
+pyinstaller>=6.10,<7
